@@ -2,11 +2,13 @@
 /**
  * Plugin Name: WooCommerce Stripe Order Reconciliation
  * Description: Automatically reconciles WooCommerce orders with Stripe payments when webhooks fail
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: Burnaway
  * Requires at least: 5.0
  * Requires PHP: 7.2
  * WC requires at least: 4.0
+ * Text Domain: wc-stripe-reconciliation
+ * Domain Path: /languages
  */
 
 // Exit if accessed directly
@@ -47,26 +49,29 @@ class WC_Stripe_Reconciliation {
      * Initialize the plugin
      */
     public function init() {
+        // Load plugin text domain
+        load_plugin_textdomain('wc-stripe-reconciliation', false, dirname(plugin_basename(__FILE__)) . '/languages');
+
         // Only proceed if WooCommerce and Stripe Gateway are active
         if (!$this->check_dependencies()) {
             return;
         }
-        
+
         // Add admin menu
         add_action('admin_menu', array($this, 'add_admin_menu'));
-        
+
         // Register the reconciliation hook
         add_action('wc_stripe_reconciliation_hook', array($this, 'reconcile_unpaid_stripe_orders'));
-        
+
         // Add a manual reconciliation button to the Orders screen
         add_action('woocommerce_admin_order_actions_end', array($this, 'add_manual_reconcile_button'));
-        
+
         // Handle the manual reconciliation AJAX call
         add_action('wp_ajax_manual_stripe_reconcile', array($this, 'handle_manual_reconciliation'));
-        
+
         // Add settings link to plugins page
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), array($this, 'add_settings_link'));
-        
+
         // Enable debug logging based on setting
         $this->maybe_enable_logging();
     }
@@ -76,25 +81,36 @@ class WC_Stripe_Reconciliation {
      */
     private function check_dependencies() {
         $active = true;
-        
+
         if (!class_exists('WooCommerce')) {
             add_action('admin_notices', function() {
-                echo '<div class="error"><p><strong>WooCommerce Stripe Reconciliation:</strong> WooCommerce must be installed and activated.</p></div>';
+                printf(
+                    '<div class="error"><p><strong>%s</strong> %s</p></div>',
+                    esc_html__('WooCommerce Stripe Reconciliation:', 'wc-stripe-reconciliation'),
+                    esc_html__('WooCommerce must be installed and activated.', 'wc-stripe-reconciliation')
+                );
             });
             $active = false;
         }
-        
+
         // Improved check for Stripe Gateway - check for gateway existence in the payment gateways
         if ($active && function_exists('WC')) {
-            $payment_gateways = WC()->payment_gateways->payment_gateways();
-            if (!isset($payment_gateways['stripe']) && !class_exists('WC_Gateway_Stripe')) {
-                add_action('admin_notices', function() {
-                    echo '<div class="error"><p><strong>WooCommerce Stripe Reconciliation:</strong> WooCommerce Stripe Gateway must be installed and activated.</p></div>';
-                });
-                $active = false;
+            // Ensure payment gateways are loaded
+            if (WC()->payment_gateways()) {
+                $payment_gateways = WC()->payment_gateways->payment_gateways();
+                if (!isset($payment_gateways['stripe']) && !class_exists('WC_Gateway_Stripe')) {
+                    add_action('admin_notices', function() {
+                        printf(
+                            '<div class="error"><p><strong>%s</strong> %s</p></div>',
+                            esc_html__('WooCommerce Stripe Reconciliation:', 'wc-stripe-reconciliation'),
+                            esc_html__('WooCommerce Stripe Gateway must be installed and activated.', 'wc-stripe-reconciliation')
+                        );
+                    });
+                    $active = false;
+                }
             }
         }
-        
+
         return $active;
     }
     
@@ -141,8 +157,8 @@ class WC_Stripe_Reconciliation {
     public function add_admin_menu() {
         add_submenu_page(
             'woocommerce',
-            'Stripe Reconciliation',
-            'Stripe Reconciliation',
+            __('Stripe Reconciliation', 'wc-stripe-reconciliation'),
+            __('Stripe Reconciliation', 'wc-stripe-reconciliation'),
             'manage_woocommerce',
             'wc-stripe-reconciliation',
             array($this, 'admin_page')
@@ -164,16 +180,20 @@ class WC_Stripe_Reconciliation {
             'limit' => $order_limit,
         ));
         
-        if (empty($orders)) return 0;
-        
+        if (empty($orders)) {
+            $this->log('No pending or on-hold Stripe orders found.');
+            return 0;
+        }
+
         // Load Stripe API
         if (!class_exists('WC_Stripe_API')) {
             // Try to load it manually if possible
             if (function_exists('WC') && isset(WC()->payment_gateways)) {
                 WC()->payment_gateways->payment_gateways();
             }
-            
+
             if (!class_exists('WC_Stripe_API')) {
+                $this->log('WC_Stripe_API class not available. Aborting reconciliation.');
                 return 0;
             }
         }
@@ -196,7 +216,7 @@ class WC_Stripe_Reconciliation {
             // If payment succeeded but order not updated
             if (isset($response->status) && $response->status === 'succeeded') {
                 $order->payment_complete($payment_intent_id);
-                $order->add_order_note('Payment reconciled automatically: Stripe payment was successful.');
+                $order->add_order_note(__('Payment reconciled automatically: Stripe payment was successful.', 'wc-stripe-reconciliation'));
                 $reconciled_count++;
                 $this->log('Successfully reconciled order #' . $order->get_id() . ' with payment intent ' . $payment_intent_id);
             }
@@ -232,7 +252,11 @@ class WC_Stripe_Reconciliation {
             return;
         }
         
-        echo '<button type="button" class="button reconcile-stripe-payment" data-order-id="' . esc_attr($order->get_id()) . '">Reconcile Stripe</button>';
+        printf(
+            '<button type="button" class="button reconcile-stripe-payment" data-order-id="%d">%s</button>',
+            esc_attr($order->get_id()),
+            esc_html__('Reconcile Stripe', 'wc-stripe-reconciliation')
+        );
         
         // Add the JavaScript for the button
         wc_enqueue_js('
@@ -269,60 +293,62 @@ class WC_Stripe_Reconciliation {
      */
     public function handle_manual_reconciliation() {
         check_ajax_referer('stripe-reconcile-nonce', 'security');
-        
+
         if (!current_user_can('manage_woocommerce')) {
-            wp_send_json_error('Permission denied');
+            wp_send_json_error(__('Permission denied', 'wc-stripe-reconciliation'));
             return;
         }
-        
+
         $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
-        
+
         if (!$order_id) {
-            wp_send_json_error('No order specified');
+            wp_send_json_error(__('No order specified', 'wc-stripe-reconciliation'));
             return;
         }
-        
+
         $order = wc_get_order($order_id);
-        
+
         if (!$order) {
-            wp_send_json_error('Order not found');
+            wp_send_json_error(__('Order not found', 'wc-stripe-reconciliation'));
             return;
         }
-        
+
         if ($order->get_payment_method() !== 'stripe') {
-            wp_send_json_error('Not a Stripe order');
+            wp_send_json_error(__('Not a Stripe order', 'wc-stripe-reconciliation'));
             return;
         }
-        
+
         $payment_intent_id = $order->get_meta('_stripe_payment_intent');
-        
+
         if (empty($payment_intent_id)) {
-            wp_send_json_error('No Stripe Payment Intent found');
+            wp_send_json_error(__('No Stripe Payment Intent found', 'wc-stripe-reconciliation'));
             return;
         }
-        
+
         // Load Stripe API
         if (!class_exists('WC_Stripe_API')) {
-            wp_send_json_error('Stripe API not available');
+            wp_send_json_error(__('Stripe API not available', 'wc-stripe-reconciliation'));
             return;
         }
-        
+
         // Get payment intent from Stripe
         $response = WC_Stripe_API::request(array(), 'payment_intents/' . $payment_intent_id, 'GET');
-        
+
         if (is_wp_error($response)) {
-            wp_send_json_error('Error checking payment: ' . $response->get_error_message());
+            /* translators: %s: error message from Stripe API */
+            wp_send_json_error(sprintf(__('Error checking payment: %s', 'wc-stripe-reconciliation'), $response->get_error_message()));
             return;
         }
-        
+
         // If payment succeeded but order not updated
         if (isset($response->status) && $response->status === 'succeeded') {
             $order->payment_complete($payment_intent_id);
-            $order->add_order_note('Payment manually reconciled: Stripe payment was successful.');
+            $order->add_order_note(__('Payment manually reconciled: Stripe payment was successful.', 'wc-stripe-reconciliation'));
             $this->log('Manual reconciliation successful for order #' . $order_id);
-            wp_send_json_success('Order updated successfully');
+            wp_send_json_success(__('Order updated successfully', 'wc-stripe-reconciliation'));
         } else {
-            wp_send_json_error('Payment not successful in Stripe. Status: ' . $response->status);
+            /* translators: %s: payment status from Stripe */
+            wp_send_json_error(sprintf(__('Payment not successful in Stripe. Status: %s', 'wc-stripe-reconciliation'), $response->status));
         }
     }
     
@@ -330,7 +356,10 @@ class WC_Stripe_Reconciliation {
      * Add settings link on plugin page
      */
     public function add_settings_link($links) {
-        $settings_link = '<a href="admin.php?page=wc-stripe-reconciliation">Settings</a>';
+        $settings_link = sprintf(
+            '<a href="admin.php?page=wc-stripe-reconciliation">%s</a>',
+            __('Settings', 'wc-stripe-reconciliation')
+        );
         array_unshift($links, $settings_link);
         return $links;
     }
@@ -342,22 +371,34 @@ class WC_Stripe_Reconciliation {
         // Save settings if submitted
         if (isset($_POST['wc_stripe_reconciliation_submit'])) {
             check_admin_referer('wc_stripe_reconciliation_settings');
-            
+
             $days = isset($_POST['days_to_check']) ? absint($_POST['days_to_check']) : 2;
             $limit = isset($_POST['order_limit']) ? absint($_POST['order_limit']) : 25;
             $logging = isset($_POST['enable_logging']) ? 'yes' : 'no';
-            
+
+            // Validate ranges
+            $days = max(1, min(30, $days));
+            $limit = max(5, min(100, $limit));
+
             update_option('wc_stripe_reconciliation_days', $days);
             update_option('wc_stripe_reconciliation_limit', $limit);
             update_option('wc_stripe_reconciliation_logging', $logging);
-            
-            echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
+
+            printf(
+                '<div class="notice notice-success"><p>%s</p></div>',
+                esc_html__('Settings saved!', 'wc-stripe-reconciliation')
+            );
         }
         
         // Run manual reconciliation if requested
         if (isset($_GET['run_now']) && $_GET['run_now'] === '1') {
+            check_admin_referer('wc_stripe_reconciliation_run_now');
             $count = $this->reconcile_unpaid_stripe_orders();
-            echo '<div class="notice notice-info"><p>Reconciliation completed. ' . $count . ' orders were updated.</p></div>';
+            printf(
+                '<div class="notice notice-info"><p>%s</p></div>',
+                /* translators: %d: number of orders updated */
+                sprintf(esc_html__('Reconciliation completed. %d orders were updated.', 'wc-stripe-reconciliation'), $count)
+            );
         }
         
         // Get current settings
@@ -406,7 +447,7 @@ class WC_Stripe_Reconciliation {
             <div class="card">
                 <h2>Manual Reconciliation</h2>
                 <p>Click the button below to run the reconciliation process now.</p>
-                <a href="<?php echo esc_url(add_query_arg('run_now', '1')); ?>" class="button button-secondary">Run Reconciliation Now</a>
+                <a href="<?php echo esc_url(wp_nonce_url(add_query_arg('run_now', '1'), 'wc_stripe_reconciliation_run_now')); ?>" class="button button-secondary">Run Reconciliation Now</a>
             </div>
             
             <div class="card">
