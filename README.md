@@ -73,6 +73,14 @@ Find detailed logs at WooCommerce → Status → Logs → stripe-reconciliation
 
 ## Changelog
 
+### 1.0.2
+- Security: Added nonce verification for manual reconciliation run
+- Security: Improved input validation for admin settings with range constraints
+- Improvement: Better error handling and logging in reconciliation process
+- Improvement: Enhanced payment gateway loading check for better reliability
+- Feature: Added internationalization (i18n) support with text domain
+- Code Quality: Updated all user-facing strings to use translation functions
+
 ### 1.0.1
 - Fixed dependency check for WooCommerce
 - Improved Stripe Gateway detection
